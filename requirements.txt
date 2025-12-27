@@ -1,0 +1,17 @@
+# Bibliotecas de Geoprocessamento e Raster
+rasterio==1.3.10
+rioxarray==0.15.5
+xarray==2024.2.0
+
+# Ciência de Dados e Manipulação
+numpy>=1.22.4,<2.0.0
+pandas>=2.1.0
+scipy>=1.10.0
+
+# Machine Learning e Estatística
+statsmodels>=0.14.0
+scikit-learn>=1.3.0
+
+# Visualização e Gráficos
+matplotlib>=3.7.0
+seaborn>=0.12.0
