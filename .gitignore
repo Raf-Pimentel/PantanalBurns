@@ -1,0 +1,7 @@
+_NBR_OUT/
+_NDVI_OUT/
+*.png
+venv/
+__pycache__/
+.vscode/
+
