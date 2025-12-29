@@ -1,145 +1,110 @@
-import os
 import pandas as pd
 import numpy as np
 import rasterio
-import matplotlib.pyplot as plt
-from statsmodels.tsa.arima.model import ARIMA
+from pathlib import Path
 import warnings
+import os
 
-# Silenciar avisos chatos do NumPy e Matplotlib
-warnings.filterwarnings('ignore')
+# Desativar avisos de metadados do rasterio
+warnings.filterwarnings("ignore", category=UserWarning)
 
-# Tentar usar um estilo universal
-try:
-    plt.style.use('seaborn-whitegrid')
-except:
-    plt.style.use('ggplot')
-
-# ============================================================================
-# 1. CONFIGURAÇÃO DE CAMINHOS
-# ============================================================================
-# O script usa os CSVs já limpos, sem as imagens corrompidas.
-NBR_CSV = '_NBR_OUT/manifest_nbr.csv'
-NDVI_CSV = '_NDVI_OUT/manifest_ndvi.csv'
-
-print("="*80)
-print("PIPELINE PANTANAL: ANÁLISE POR MÉDIA REGIONAL (SPATIAL MEAN)")
-print("="*80)
-
-# ============================================================================
-# 2. FUNÇÃO PARA CALCULAR A MÉDIA DE TODOS OS PIXELS
-# ============================================================================
-def extract_spatial_mean(csv_path, path_column):
-    """Lê cada imagem e calcula a média de todos os pixels válidos."""
-    df = pd.read_csv(csv_path)
-    df['date_acquired'] = pd.to_datetime(df['date_acquired'])
-    df = df.sort_values('date_acquired')
-    
-    means = []
-    dates = []
-    
-    print(f"\n📊 Calculando médias para {path_column.split('_')[0].upper()}...")
-    
-    for idx, row in df.iterrows():
-        path = row[path_column]
-        if not os.path.exists(path):
-            continue
+def get_raster_stats(path):
+    """Lê o raster e extrai estatísticas de pixels válidos no intervalo [-1, 1]."""
+    if not path.exists():
+        return None
+    try:
+        with rasterio.open(str(path)) as src:
+            data = src.read(1).astype(float)
+            nodata = src.nodata
             
-        try:
-            with rasterio.open(path) as src:
-                # Lemos os dados como float para suportar NaNs
-                data = src.read(1).astype('float32')
-                
-                # Tratar valores de NoData (fundo da imagem)
-                nodata = src.nodata
-                if nodata is not None:
-                    data[data == nodata] = np.nan
-                
-                # Filtro de segurança para índices (devem estar entre -1.5 e 1.5)
-                # Valores fora disso geralmente são erros de processamento ou bordas
-                data[(data < -1.5) | (data > 1.5)] = np.nan
-                
-                # Calculamos a média de todos os pixels que não são NaN
-                img_mean = np.nanmean(data)
-                
-                # Multiplicamos pelo fator de escala do Landsat se necessário
-                # Se seus arquivos já estiverem entre -1 e 1, o código ignora isso
-                if abs(img_mean) > 10:
-                    img_mean = img_mean * 0.0001
-                
-                means.append(img_mean)
-                dates.append(row['date_acquired'])
-                
-        except Exception:
-            # Se o arquivo estiver corrompido, pulamos (o pandas irá interpolar depois)
-            print(f"  ⚠️  Pulando arquivo com erro: {os.path.basename(path)}")
-            means.append(np.nan)
-            dates.append(row['date_acquired'])
+            # Filtro: Remove NoData e mantém apenas o range físico de NDVI/NBR (-1 a 1)
+            # Se seus dados forem Landsat Scale (0-10000), mude 1.1 para 10001
+            mask = (data > -1.1) & (data < 1.1)
+            if nodata is not None:
+                mask &= (data != nodata)
+
+            valid_data = data[mask]
+            if valid_data.size == 0:
+                return None
             
-    series = pd.Series(means, index=dates)
-    # Preenche buracos de arquivos corrompidos com base no tempo
-    series = series.interpolate(method='time').fillna(method='bfill').fillna(method='ffill')
-    return series
+            return {
+                'mean': np.nanmean(valid_data),
+                'std': np.nanstd(valid_data),
+                'count': valid_data.size
+            }
+    except Exception:
+        return None
 
-# ============================================================================
-# 3. PROCESSAMENTO DOS DADOS
-# ============================================================================
-nbr_series = extract_spatial_mean(NBR_CSV, 'nbr_path')
-ndsi_series = extract_spatial_mean(NDVI_CSV, 'ndvi_path')
+def main():
+    # 1. Definir caminhos baseados na estrutura do seu 'tree'
+    base_dir = Path(os.getcwd())
+    print(f"--- Iniciando Processamento no Pantanal ---")
+    print(f"Diretório base: {base_dir}")
 
-print("\n[OK] Médias espaciais calculadas.")
+    # Localização exata conforme seu comando tree:
+    nbr_manifest = base_dir / "_NBR_OUT" / "manifest_nbr.csv"
+    ndvi_manifest = base_dir / "_NDVI_OUT" / "manifest_ndvi.csv"
 
-# ============================================================================
-# 4. MACHINE LEARNING: PREVISÃO DA MÉDIA REGIONAL
-# ============================================================================
-print("\n🤖 Aplicando ML (ARIMA) na tendência regional...")
-try:
-    # O modelo agora olha para a média da região inteira
-    model = ARIMA(nbr_series, order=(5, 1, 0))
-    model_fit = model.fit()
+    # Verificação de existência
+    if not nbr_manifest.exists():
+        print(f"ERRO: Não encontrei {nbr_manifest}")
+        return
+    if not ndvi_manifest.exists():
+        print(f"ERRO: Não encontrei {ndvi_manifest}")
+        return
+
+    # 2. Carregar dados
+    print("Carregando manifestos...")
+    df_nbr = pd.read_csv(nbr_manifest)
+    df_ndvi = pd.read_csv(ndvi_manifest)
+
+    # Merge por scene_id para garantir que comparamos a mesma foto no tempo
+    df_merged = pd.merge(
+        df_nbr[['scene_id', 'date_acquired', 'nbr_path']], 
+        df_ndvi[['scene_id', 'ndvi_path']], 
+        on='scene_id'
+    )
+
+    df_merged['date_acquired'] = pd.to_datetime(df_merged['date_acquired'])
+    df_merged = df_merged.sort_values('date_acquired')
     
-    # Previsão para os próximos 6 meses
-    forecast_steps = 6
-    forecast = model_fit.forecast(steps=forecast_steps)
-    
-    # Criar datas futuras para o gráfico
-    last_date = nbr_series.index[-1]
-    forecast_dates = pd.date_range(last_date, periods=forecast_steps + 1, freq='ME')[1:]
-    print("✅ Previsão concluída.")
-except Exception as e:
-    print(f"⚠️ Erro no ML: {e}")
-    forecast = None
+    start_date = df_merged['date_acquired'].min()
+    results = []
 
-# ============================================================================
-# 5. GRÁFICO FINAL PARA O ARTIGO
-# ============================================================================
-plt.figure(figsize=(14, 7))
+    # 3. Processar imagens
+    print(f"Analisando {len(df_merged)} cenas temporais...")
+    for idx, row in df_merged.iterrows():
+        # Ignoramos o caminho absoluto do CSV e montamos o caminho local
+        file_nbr = base_dir / "_NBR_OUT" / Path(row['nbr_path']).name
+        file_ndvi = base_dir / "_NDVI_OUT" / Path(row['ndvi_path']).name
 
-# Dados Reais (Médias)
-plt.plot(nbr_series.index.to_numpy(), nbr_series.values, 
-         label='Média Regional NBR (Vegetação)', color='#2ca02c', linewidth=2.5)
+        stats_nbr = get_raster_stats(file_nbr)
+        stats_ndvi = get_raster_stats(file_ndvi)
 
-plt.plot(ndsi_series.index.to_numpy(), ndsi_series.values, 
-         label='Média Regional NDSI (Umidade)', color='#1f77b4', linestyle='--', alpha=0.6)
+        if stats_nbr and stats_ndvi:
+            results.append({
+                'data': row['date_acquired'].strftime('%Y-%m-%d'),
+                'dias_desde_inicio': (row['date_acquired'] - start_date).days,
+                'media_NBR': stats_nbr['mean'],
+                'std_NBR': stats_nbr['std'],
+                'media_NDVI': stats_ndvi['mean'],
+                'std_NDVI': stats_ndvi['std'],
+                'pixels_validos': stats_nbr['count'],
+                'scene_id': row['scene_id']
+            })
+            if (idx + 1) % 5 == 0:
+                print(f"Progresso: {idx + 1}/{len(df_merged)} cenas processadas.")
 
-# Previsão ML
-if forecast is not None:
-    plt.plot(forecast_dates.to_numpy(), forecast.values, 
-             label='Tendência de Recuperação (ML)', color='red', linestyle=':', linewidth=3, marker='^')
-    
-    # Intervalo de Confiança Visual
-    plt.fill_between(forecast_dates.to_numpy(), forecast.values - 0.03, forecast.values + 0.03, 
-                     color='red', alpha=0.1)
+    # 4. Salvar resultados
+    if results:
+        output_csv = base_dir / "resultados_temporais.csv"
+        df_final = pd.DataFrame(results)
+        df_final.to_csv(output_csv, index=False)
+        print(f"\n--- SUCESSO ---")
+        print(f"Arquivo gerado: {output_csv}")
+        print(f"Total de datas processadas: {len(df_final)}")
+    else:
+        print("\nERRO: Nenhuma imagem pôde ser processada. Verifique se os arquivos .tif estão íntegros.")
 
-# Estética Científica
-plt.title("Dinâmica de Recuperação Pós-Fogo no Pantanal (Média de Todos os Pixels)", fontsize=16)
-plt.xlabel("Ano", fontsize=12)
-plt.ylabel("Valor Médio do Índice", fontsize=12)
-plt.axhline(0, color='black', linewidth=0.8, alpha=0.3)
-plt.legend(loc='best', frameon=True)
-plt.grid(True, linestyle=':', alpha=0.6)
-
-plt.tight_layout()
-plt.savefig('analise_regional_pantanal.png', dpi=300)
-print("\n📊 Gráfico salvo como: 'analise_regional_pantanal.png'")
-print("="*80)
+if __name__ == "__main__":
+    main()
