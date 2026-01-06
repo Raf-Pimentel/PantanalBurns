@@ -5,11 +5,11 @@ from pathlib import Path
 import warnings
 import os
 
-# Desativar avisos de metadados do rasterio
+# Disable rasterio metadata warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 def get_raster_stats(path):
-    """Lê o raster e extrai estatísticas de pixels válidos no intervalo [-1, 1]."""
+    """Reads the raster and extracts statistics from valid pixels in the range [-1, 1]."""
     if not path.exists():
         return None
     try:
@@ -17,8 +17,8 @@ def get_raster_stats(path):
             data = src.read(1).astype(float)
             nodata = src.nodata
             
-            # Filtro: Remove NoData e mantém apenas o range físico de NDVI/NBR (-1 a 1)
-            # Se seus dados forem Landsat Scale (0-10000), mude 1.1 para 10001
+            # Filter: remove NoData and keep only the physical NDVI/NBR range (-1 to 1)
+            # If your data are Landsat scaled (0–10000), change 1.1 to 10001
             mask = (data > -1.1) & (data < 1.1)
             if nodata is not None:
                 mask &= (data != nodata)
@@ -36,29 +36,29 @@ def get_raster_stats(path):
         return None
 
 def main():
-    # 1. Definir caminhos baseados na estrutura do seu 'tree'
+    # 1. Define paths based on your directory tree structure
     base_dir = Path(os.getcwd())
-    print(f"--- Iniciando Processamento no Pantanal ---")
-    print(f"Diretório base: {base_dir}")
+    print(f"--- Starting Processing in the Pantanal ---")
+    print(f"Base directory: {base_dir}")
 
-    # Localização exata conforme seu comando tree:
+    # Exact locations according to your tree command:
     nbr_manifest = base_dir / "_NBR_OUT" / "manifest_nbr.csv"
     ndvi_manifest = base_dir / "_NDVI_OUT" / "manifest_ndvi.csv"
 
-    # Verificação de existência
+    # Existence check
     if not nbr_manifest.exists():
-        print(f"ERRO: Não encontrei {nbr_manifest}")
+        print(f"ERROR: Could not find {nbr_manifest}")
         return
     if not ndvi_manifest.exists():
-        print(f"ERRO: Não encontrei {ndvi_manifest}")
+        print(f"ERROR: Could not find {ndvi_manifest}")
         return
 
-    # 2. Carregar dados
-    print("Carregando manifestos...")
+    # 2. Load data
+    print("Loading manifests...")
     df_nbr = pd.read_csv(nbr_manifest)
     df_ndvi = pd.read_csv(ndvi_manifest)
 
-    # Merge por scene_id para garantir que comparamos a mesma foto no tempo
+    # Merge by scene_id to ensure we compare the same scene over time
     df_merged = pd.merge(
         df_nbr[['scene_id', 'date_acquired', 'nbr_path']], 
         df_ndvi[['scene_id', 'ndvi_path']], 
@@ -71,10 +71,10 @@ def main():
     start_date = df_merged['date_acquired'].min()
     results = []
 
-    # 3. Processar imagens
-    print(f"Analisando {len(df_merged)} cenas temporais...")
+    # 3. Process images
+    print(f"Analyzing {len(df_merged)} temporal scenes...")
     for idx, row in df_merged.iterrows():
-        # Ignoramos o caminho absoluto do CSV e montamos o caminho local
+        # Ignore absolute paths from the CSV and rebuild local paths
         file_nbr = base_dir / "_NBR_OUT" / Path(row['nbr_path']).name
         file_ndvi = base_dir / "_NDVI_OUT" / Path(row['ndvi_path']).name
 
@@ -93,18 +93,18 @@ def main():
                 'scene_id': row['scene_id']
             })
             if (idx + 1) % 5 == 0:
-                print(f"Progresso: {idx + 1}/{len(df_merged)} cenas processadas.")
+                print(f"Progress: {idx + 1}/{len(df_merged)} scenes processed.")
 
-    # 4. Salvar resultados
+    # 4. Save results
     if results:
         output_csv = base_dir / "resultados_temporais.csv"
         df_final = pd.DataFrame(results)
         df_final.to_csv(output_csv, index=False)
-        print(f"\n--- SUCESSO ---")
-        print(f"Arquivo gerado: {output_csv}")
-        print(f"Total de datas processadas: {len(df_final)}")
+        print(f"\n--- SUCCESS ---")
+        print(f"Generated file: {output_csv}")
+        print(f"Total processed dates: {len(df_final)}")
     else:
-        print("\nERRO: Nenhuma imagem pôde ser processada. Verifique se os arquivos .tif estão íntegros.")
+        print("\nERROR: No images could be processed. Check whether the .tif files are valid.")
 
 if __name__ == "__main__":
     main()
